@@ -1,9 +1,9 @@
 # 1. 데이터 폴더와 파일을 무시합니다.
 # DATA/
-*.npz
-*.csv
-*.xlsx
-*.bag
+# *.npz
+# *.csv
+# *.xlsx
+# *.bag
 
 # 2. 파이썬 캐시 및 환경 파일을 무시합니다.
 __pycache__/
