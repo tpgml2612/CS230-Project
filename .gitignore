@@ -17,3 +17,10 @@ venv/
 # 4. (나중에 사용할 수 있는) 기타 데이터 파일
 *.png
 *.txt
+
+# 5. 예외 규칙 (results 폴더는 추적)
+!results/
+!results/logs/
+!results/plots/
+!results/logs/**/*.csv
+!results/plots/**/*.png
