@@ -20,7 +20,6 @@ venv/
 
 # 5. 예외 규칙 (results 폴더는 추적)
 !results/
-!results/logs/
+!results/*.csv
 !results/plots/
-!results/logs/**/*.csv
 !results/plots/**/*.png
