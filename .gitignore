@@ -5,8 +5,6 @@ DATA/
 *.xlsx
 *.bag
 
-results/
-
 # 2. 파이썬 캐시 및 환경 파일을 무시합니다.
 __pycache__/
 *.pyc
