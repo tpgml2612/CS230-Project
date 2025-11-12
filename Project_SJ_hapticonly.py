@@ -420,7 +420,7 @@ def main():
             # 훈련 설정
             TRAIN_CONFIG = {
                 'learning_rate': learning_rate,
-                'epochs': 500, # 126개 샘플은 적으니 epoch를 100~200 정도로 늘려도 좋습니다.
+                'epochs': 10000, # 126개 샘플은 적으니 epoch를 100~200 정도로 늘려도 좋습니다.
                 'batch_size': 32, # 샘플이 적으므로 배치 크기를 32보다 작게 (16) 조정
                 'loss': 'mean_squared_error',
                 'metrics': ['mean_absolute_error', tf.keras.metrics.RootMeanSquaredError(name='rmse')],
