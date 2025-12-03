@@ -1,0 +1,26 @@
+data:
+  examples: "valid_examples_listseq.csv"
+  labels: "valid_labels_listseq.csv"
+  scale_labels: true
+
+training:
+  epochs: 1000
+  batch_size: 8
+  lr: 0.001
+  seed: 42
+
+model:
+  type: cnn1d
+
+  channels: [32, 32, 32, 32]
+  kernel_sizes: [2, 2, 2, 2]
+  pools: [1, 1,1,1]
+
+  pool_kernel: 2
+  dropout: 0.7
+  output_dim: 2
+paths:
+  save_dir: "outputs"
+
+print:
+  verbose: true

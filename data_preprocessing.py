@@ -21,7 +21,7 @@ def load_data(examples_path='valid_examples_listseq.csv', labels_path='valid_lab
     print(f'Loaded: examples shape={examples.shape}, labels shape={labels.shape}')
     return examples, labels
 
-def preprocess_data(examples, labels, test_size=0.2, random_state=42, scale_labels=True):
+def preprocess_data_MLP(examples, labels, test_size=0.2, random_state=42, scale_labels=True):
     print('--------------------------------------step 2: Preprocess Data--------------------------------------')
     def _is_list_string(s):
         return isinstance(s, str) and s.strip().startswith('[') and s.strip().endswith(']')
@@ -184,9 +184,18 @@ def preprocess_data(examples, labels, test_size=0.2, random_state=42, scale_labe
     y_test_raw = y_test.copy()
 
     # Feature scaling: fit only on the training set and apply to both
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train_raw.astype(float))
-    X_test = scaler.transform(X_test_raw.astype(float))
+    print("scale_labels:", scale_labels)
+    if scale_labels:
+        print('hio')
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X_train_raw.astype(float))
+        X_test = scaler.transform(X_test_raw.astype(float))
+    else:
+        print('hiii')
+        scaler=None
+        X_train = X_train_raw.astype(float)
+        X_test = X_test_raw.astype(float)
+
     # print('Feature scaling (StandardScaler) applied to training set and propagated to test set')
     # print(f'Split data: X_train={X_train.shape}, X_test={X_test.shape}, y_train={y_train.shape}, y_test={y_test.shape}')
     # print("X_train sample after scaling:", X_train[0])
@@ -221,7 +230,99 @@ def preprocess_data(examples, labels, test_size=0.2, random_state=42, scale_labe
     # print("X_train : ", X_train)
     return X_train, X_test, y_train, y_test, y_train_raw, y_test_raw, label_encoder, scaler, label_scaler
 
+
+def preprocess_data_1D_CNN(examples, labels, test_size=0.2, random_state=42, scale_labels=True):
+    print('--------------------------------------step 2: Preprocess Data (CNN 1D)--------------------------------------')
+
+    # 1) Parse sequence columns (stringified list → numeric)
+    def _is_list_string(s):
+        return isinstance(s, str) and s.strip().startswith('[') and s.strip().endswith(']')
+
+    def _parse_sequence(value):
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            return None
+        if isinstance(value, str) and _is_list_string(value):
+            return np.array(ast.literal_eval(value), dtype=float)
+        if isinstance(value, (list, tuple, np.ndarray)):
+            return np.array(value, dtype=float)
+        return np.array([float(value)], dtype=float)
+
+    processed_cols = []
+    processed_data = []
+
+    for col in examples.columns:
+        col_vals = examples[col].values
+        first_valid = next((v for v in col_vals if v is not None and not pd.isna(v)), None)
+
+        is_sequence = (
+            isinstance(first_valid, (list, tuple, np.ndarray)) or
+            (isinstance(first_valid, str) and _is_list_string(first_valid))
+        )
+
+        if is_sequence:
+            # sequence column → pad
+            seqs = [ _parse_sequence(v) for v in col_vals ]
+            max_len = max(len(s) for s in seqs if s is not None)
+
+            padded = np.full((len(seqs), max_len), np.nan)
+            for i, arr in enumerate(seqs):
+                if arr is not None:
+                    padded[i, :len(arr)] = arr
+
+            processed_data.append(padded)
+            processed_cols.extend([f"{col}_t{i}" for i in range(max_len)])
+
+        else:
+            # scalar column
+            numeric_col = examples[col].astype(float).values.reshape(-1, 1)
+            processed_data.append(numeric_col)
+            processed_cols.append(col)
+
+    X_raw = np.hstack(processed_data).astype(float)
+    y_raw = labels.values
+
+    # 2) Train/test split BEFORE scaling
+    X_train_raw, X_test_raw, y_train, y_test = train_test_split(
+        X_raw, y_raw, test_size=test_size, random_state=random_state
+    )
+    y_train_raw = y_train.copy()
+    y_test_raw = y_test.copy()
+    # 3) Impute NaNs with training means
+    train_means = np.nanmean(X_train_raw, axis=0)
+    train_means = np.where(np.isnan(train_means), 0.0, train_means)
+
+    X_train_raw = np.where(np.isnan(X_train_raw), train_means, X_train_raw)
+    X_test_raw  = np.where(np.isnan(X_test_raw),  train_means, X_test_raw)
+
+    # 4) Standard scaling (flattened 2D)
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train_raw)
+    X_test  = scaler.transform(X_test_raw)
+
+    # 5) CNN reshape → (N, 1, seq_len)
+    X_train = X_train.reshape(X_train.shape[0], 1, X_train.shape[1])
+    X_test  = X_test.reshape(X_test.shape[0],  1, X_test.shape[1])
+
+    # 6) Convert to float32
+    X_train = X_train.astype("float32")
+    X_test  = X_test.astype("float32")
+
+    # 7) Label scaling (optional)
+    label_scaler = None
+    if scale_labels:
+        # from sklearn.preprocessing import StandardScaler
+        label_scaler = StandardScaler()
+        y_train = label_scaler.fit_transform(y_train.astype(float))
+        y_test  = label_scaler.transform(y_test.astype(float))
+
+    y_train = y_train.astype("float32")
+    y_test  = y_test.astype("float32")
+
+    return X_train, X_test, y_train, y_test, y_train_raw, y_test_raw, None, scaler, label_scaler
+
+
+
 if __name__ == "__main__":
     examples, labels = load_data()
-    X_train, X_test, y_train, y_test, y_train_raw, y_test_raw, label_encoder, scaler, label_scaler = preprocess_data(examples, labels)
+    X_train, X_test, y_train, y_test, y_train_raw, y_test_raw, label_encoder, scaler, label_scaler = preprocess_data_MLP(examples, labels)
     print('Preprocessing complete (standalone run)')

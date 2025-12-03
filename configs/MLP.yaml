@@ -3,19 +3,24 @@ data:
   labels: "valid_labels_listseq.csv"
   scale_labels: true
 
+
 training:
   epochs: 100
   batch_size: 16
   lr: 0.001
-  dropout: 0.0
-  hidden_dims: [128, 64,32,64,128,64,32,16]
   seed: 42
+
+
+model:
+  type: "mlp"
+  hidden_dims: [128, 64, 32, 64, 128, 64, 32, 16]
+  dropout: 0.0
+  use_batchnorm: true
+
 
 paths:
   save_dir: "outputs"
 
-model:
-  use_batchnorm: true
 
 print:
   verbose: true

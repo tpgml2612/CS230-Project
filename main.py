@@ -8,7 +8,9 @@ import torch
 import datetime
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
-from data_preprocessing import load_data, preprocess_data
+from data_preprocessing import load_data, preprocess_data_MLP, preprocess_data_1D_CNN
+from data_preprocessing_LSTM import preprocess_data_LSTM
+from models.lstm_model import LSTM
 import yaml
 
 class MLP(nn.Module):
@@ -32,17 +34,105 @@ class MLP(nn.Module):
         out = self.net(x)
         return out
 
+class CNN1D(nn.Module):
+    def __init__(
+        self,
+        input_length,
+        output_dim,
+        channels,
+        kernel_sizes,
+        pools,
+        pool_kernel=2,
+        dropout=0.3,
+        target_len=32
+    ):
+        super().__init__()
 
-def train(model, device, dataloader, optimizer, loss_fn, epoch, print_every=20):
+
+        keras_dilations = [1, 1, 1, 1]
+
+
+        dilations = (keras_dilations * 10)[:len(channels)]
+
+
+        layers = []
+        in_ch = 1
+        length = input_length
+
+        for out_ch, k, pool_flag, dil in zip(channels, kernel_sizes, pools, dilations):
+
+            layers.append(nn.Conv1d(
+                in_channels=in_ch,
+                out_channels=out_ch,
+                kernel_size=k,
+                # dilation=dil,
+                padding=(k // 2) * dil   # SAME padding
+            ))
+
+            layers.append(nn.BatchNorm1d(out_ch))
+            layers.append(nn.ReLU())
+
+            if pool_flag == 1:
+                layers.append(nn.MaxPool1d(pool_kernel))
+                length //= pool_kernel
+
+            in_ch = out_ch
+
+        self.features = nn.Sequential(*layers)
+
+
+        self.global_pool = nn.AdaptiveMaxPool1d(1)
+
+
+        DENSE1 = 64
+        DENSE2 = 32
+
+        self.classifier = nn.Sequential(
+            nn.Linear(in_ch, DENSE1),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+
+            nn.Linear(DENSE1, DENSE2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+
+            nn.Linear(DENSE2, output_dim)
+        )
+
+    def forward(self, x):
+        if x.dim() == 2:
+            x = x.unsqueeze(1)
+
+        x = self.features(x)
+        x = self.global_pool(x)
+        x = x.squeeze(-1)
+
+        x = self.classifier(x)
+        return x
+
+
+
+def _unpack_batch(batch):
+    if len(batch) == 3:
+        data, lengths, target = batch
+    else:
+        data, target = batch
+        lengths = None
+    return data, lengths, target
+
+
+def train(model, device, dataloader, optimizer, loss_fn, epoch):
     model.train()
     running_loss = 0.0
     total = 0
-    grad_norm_accum = 0.0
-    grad_norm_n = 0
-    for batch_idx, (data, target) in enumerate(dataloader):
+    for batch in dataloader:
+        data, lengths, target = _unpack_batch(batch)
         data, target = data.to(device), target.to(device).float()
         optimizer.zero_grad()
-        outputs = model(data)
+        if lengths is not None:
+            outputs = model(data, lengths)
+        else:
+            outputs = model(data)
         loss = loss_fn(outputs, target)
         loss.backward()
         optimizer.step()
@@ -61,9 +151,13 @@ def evaluate(model, device, dataloader, loss_fn=None):
     running_loss = 0.0
     total = 0
     with torch.no_grad():
-        for data, target in dataloader:
+        for batch in dataloader:
+            data, lengths, target = _unpack_batch(batch)
             data, target = data.to(device), target.to(device).float()
-            outputs = model(data)
+            if lengths is not None:
+                outputs = model(data, lengths)
+            else:
+                outputs = model(data)
             preds.extend(outputs.cpu().numpy().tolist())
             trues.extend(target.cpu().numpy().tolist())
             if loss_fn is not None:
@@ -103,6 +197,7 @@ def plot_losses(train_losses, val_losses, save_path=None):
     plt.xlabel('Epoch')
     plt.ylabel('Loss (MSE)')
     plt.title('Training and Validation Losses')
+    plt.ylim(bottom=0, top=2)
     plt.legend()
     if save_path:
         plt.savefig(save_path, bbox_inches='tight')
@@ -111,85 +206,161 @@ def plot_losses(train_losses, val_losses, save_path=None):
     else:
         plt.show()
 
+def create_model(model_type, cfg, input_length, output_dim):
+    """
+    model_type : string ("mlp", "cnn1d", ...)
+    cfg        : cfg["model"] dictionary from YAML
+    input_length : computed input dim (usually X_train.shape[1] or shape[2])
+    """
+
+    if model_type == "mlp":
+        return MLP(
+            input_dim=input_length,
+            hidden_dims=cfg.get("hidden_dims"),
+            output_dim=output_dim,
+            dropout=cfg.get("dropout"),
+            use_batchnorm=cfg.get("use_batchnorm", False)
+        )
+
+    elif model_type == "cnn1d":
+        return CNN1D(
+            input_length=input_length,
+            output_dim=output_dim,
+            channels=cfg["channels"],
+            kernel_sizes=cfg["kernel_sizes"],
+            pools=cfg["pools"],
+            pool_kernel=cfg.get("pool_kernel"),
+            dropout=cfg.get("dropout")
+        )
+    elif model_type == "lstm":
+        hidden_size = cfg.get("hidden_size", cfg.get("hidden_dim", 128))
+        return LSTM(
+            input_size=input_length,
+            hidden_size=hidden_size,
+            num_layers=cfg.get("num_layers", 2),
+            dropout=cfg.get("dropout", 0.2),
+            output_size=output_dim
+        )
+
+
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
+
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, default='config.yaml',
                         help='Path to YAML config file')
     args = parser.parse_args()
+    config_input = args.config
 
+    config_path = os.path.join("configs", config_input)
     # Load YAML config
-    with open(args.config, 'r') as f:
+    with open(config_path, 'r') as f:
         cfg = yaml.safe_load(f)
 
-    examples_path = cfg['data']['examples']
-    labels_path = cfg['data']['labels']
-    scale_labels = cfg['data']['scale_labels']
+    
+    # Load from YAML config
+    # Data
+    data_cfg = cfg.get('data', {})
+    examples_path = data_cfg.get('examples')
+    labels_path = data_cfg.get('labels')
+    scale_labels = data_cfg.get('scale_labels', False)
 
-    epochs = cfg['training']['epochs']
-    batch_size = cfg['training']['batch_size']
-    lr = cfg['training']['lr']
-    dropout = cfg['training']['dropout']
-    hidden_dims = cfg['training']['hidden_dims']
+    # Training hyperparams
+    train_cfg = cfg.get('training', {})
+    epochs = train_cfg.get('epochs', 100)
+    batch_size = train_cfg.get('batch_size', 32)
+    lr = train_cfg.get('lr', 1e-3)
+    seed = train_cfg.get('seed', 42)
 
-    save_dir = cfg['paths']['save_dir']
-    use_batchnorm = cfg['model']['use_batchnorm']
+    # Model hyperparams (fully general)
+    model_cfg = cfg.get('model', {})
+    model_type = model_cfg.get('type', 'mlp')
+
+    # Values might not exist depending on model
+    hidden_dims = model_cfg.get('hidden_dims', None)     # MLP용
+    dropout = model_cfg.get('dropout', 0.0)
+    use_batchnorm = model_cfg.get('use_batchnorm', False)
+
+    # CNN용 파라미터들도 안전하게 불러오기
+    num_channels = model_cfg.get('num_channels', None)
+    kernel_size = model_cfg.get('kernel_size', None)
+    pool_kernel = model_cfg.get('pool_kernel', None)
+
+    # Save directory
+    paths_cfg = cfg.get('paths', {})
+    save_dir = paths_cfg.get('save_dir', 'outputs')
+
+    # Print options
     verbose = cfg.get('print', {}).get('verbose', False)
 
-    # parser = argparse.ArgumentParser(description='Train a PyTorch MLP on CSV data or synthetic data (for testing)')
-    # parser.add_argument('--examples', type=str, default='valid_examples_listseq.csv', help='Path to examples CSV')
-    # parser.add_argument('--labels', type=str, default='valid_labels_listseq.csv', help='Path to labels CSV')
-    # parser.add_argument('--scale-labels', action='store_true', help='Scale labels (StandardScaler) during preprocessing')
-    # parser.add_argument('--epochs', type=int, default=100)
-    # parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
-    # parser.add_argument('--dropout', type=float, default=0.2, help='Dropout probability (0 disables)')
-    # # Batchnorm and dropout are part of the simple model by default
-    # parser.add_argument('--save-dir', type=str, default='outputs', help='Directory where plots and final model are saved')
-    # parser.add_argument('--batch-size', type=int, default=16)
-    # parser.add_argument('--hidden-dims', type=str, default='128,64', help='Comma-separated hidden dims for the MLP (e.g. 128,64)')
-    # parser.add_argument('--seed', type=int, default=42)
-    # parser.add_argument('--print', type=bool, default=False, help='Print detailed data')
-    # # Keep optional label scaling for convenience, but by default we don't scale labels
-    # # Simplified options: no grad norm logging, no early abort threshold
-    # args = parser.parse_args()
+    ###############################
 
-    # print('Starting PyTorch DNN training pipeline')
+    preprocessing_cfg = cfg.get('preprocessing', {})
+    window_size = data_cfg.get('window_size', preprocessing_cfg.get('window_size', 32))
+    step_size = data_cfg.get('step_size', preprocessing_cfg.get('step_size', 1))
+    val_split = train_cfg.get('val_split', 0.2)
+    shuffle_flag = train_cfg.get('shuffle', True)
+    num_workers = train_cfg.get('num_workers', 0)
 
+    if model_type == "lstm":
+        train_loader, test_loader, input_dim = preprocess_data_LSTM(
+            examples_path=examples_path,
+            labels_path=labels_path,
+            window_size=window_size,
+            step_size=step_size,
+            batch_size=batch_size,
+            val_split=val_split,
+            seed=seed,
+            shuffle=shuffle_flag,
+            num_workers=num_workers,
+        )
+        train_ds = train_loader.dataset
+        test_ds = test_loader.dataset
+        y_train_arr = train_ds.labels.numpy()
+        y_test_arr = test_ds.labels.numpy()
+        y_train_raw = y_train_arr.copy()
+        y_test_raw = y_test_arr.copy()
+        label_encoder = None
+        scaler = None
+        label_scaler = None
+    else:
+        print(f'Loading data: examples={examples_path}, labels={labels_path}')
+        examples, labels = load_data(examples_path, labels_path)
+        if model_type == "mlp":
+            X_train, X_test, y_train, y_test, y_train_raw, y_test_raw, label_encoder, scaler, label_scaler = preprocess_data_MLP(examples, labels, scale_labels=scale_labels)
+        elif model_type == "cnn1d":
+            X_train, X_test, y_train, y_test, y_train_raw, y_test_raw, label_encoder, scaler, label_scaler = preprocess_data_1D_CNN(examples, labels, scale_labels=scale_labels)
+        else:
+            raise ValueError(f"Unsupported model type for preprocessing: {model_type}")
 
-    print(f'Loading data: examples={examples_path}, labels={labels_path}')
-    examples, labels = load_data(examples_path, labels_path)
-    X_train, X_test, y_train, y_test, y_train_raw, y_test_raw, label_encoder, scaler, label_scaler = preprocess_data(examples, labels, scale_labels=scale_labels)
+        X_train_t = torch.from_numpy(X_train)
+        X_test_t = torch.from_numpy(X_test)
+        y_train_arr = np.asarray(y_train)
+        y_test_arr = np.asarray(y_test)
+        if y_train_arr.ndim == 1:
+            print("---------------------------- y_train_arr is 1D, need to reshape it to 2D ----------------------------")
 
-    # print('Configuring dataset and dataloaders')
-    # Convert to tensors
-    X_train_t = torch.from_numpy(X_train)
-    X_test_t = torch.from_numpy(X_test)
-    # Ensure y arrays are 2D (n_samples, n_targets)
-    y_train_arr = np.asarray(y_train)
-    y_test_arr = np.asarray(y_test)
-    if y_train_arr.ndim == 1:
-        print("---------------------------- y_train_arr is 1D, need to reshape it to 2D ----------------------------")
-    
-    y_train_t = torch.from_numpy(y_train_arr)
-    y_test_t = torch.from_numpy(y_test_arr)
-    if verbose:
-        print(f'X_train shape: {X_train.shape}', f'X_test shape: {X_test.shape}')
-        print(f'mean of X_train: {np.mean(X_train):.4f}, std of X_train: {np.std(X_train):.4f}') 
-        print(f'mean of X_test: {np.mean(X_test):.4f}, std of X_test: {np.std(X_test):.4f}')
-        print('-----------------------------------------------------------')
-        print(f'y_train shape: {y_train.shape}',f' y_test_t shape: {y_test.shape}')
-        print(f'mean of y_train: {np.mean(y_train):.4f}, std of y_train: {np.std(y_train):.4f}')
-        print(f'mean of y_test: {np.mean(y_test):.4f}, std of y_test: {np.std(y_test):.4f}')
-        print('-----------------------------------------------------------')
-        print(f'y_train_raw shape: {y_train_raw.shape}', f'y_test_raw shape: {y_test_raw.shape}')
-        print(f'mean of y_train_raw: {np.mean(y_train_raw):.4f}, std of y_train_raw: {np.std(y_train_raw):.4f}')
-        print(f'mean of y_test_raw: {np.mean(y_test_raw):.4f}, std of y_test_raw: {np.std(y_test_raw):.4f}')
-        print('-----------------------------------------------------------')
-    batch_size = batch_size
-    train_ds = TensorDataset(X_train_t, y_train_t)
-    test_ds = TensorDataset(X_test_t, y_test_t)
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_ds, batch_size=batch_size)
+        y_train_t = torch.from_numpy(y_train_arr)
+        y_test_t = torch.from_numpy(y_test_arr)
+        if verbose:
+            print(f'X_train shape: {X_train.shape}', f'X_test shape: {X_test.shape}')
+            print(f'mean of X_train: {np.mean(X_train):.4f}, std of X_train: {np.std(X_train):.4f}')
+            print(f'mean of X_test: {np.mean(X_test):.4f}, std of X_test: {np.std(X_test):.4f}')
+            print('-----------------------------------------------------------')
+            print(f'y_train shape: {y_train.shape}',f' y_test_t shape: {y_test.shape}')
+            print(f'mean of y_train: {np.mean(y_train):.4f}, std of y_train: {np.std(y_train):.4f}')
+            print(f'mean of y_test: {np.mean(y_test):.4f}, std of y_test: {np.std(y_test):.4f}')
+            print('-----------------------------------------------------------')
+            print(f'y_train_raw shape: {y_train_raw.shape}', f'y_test_raw shape: {y_test_raw.shape}')
+            print(f'mean of y_train_raw: {np.mean(y_train_raw):.4f}, std of y_train_raw: {np.std(y_train_raw):.4f}')
+            print(f'mean of y_test_raw: {np.mean(y_test_raw):.4f}, std of y_test_raw: {np.std(y_test_raw):.4f}')
+            print('-----------------------------------------------------------')
+        train_ds = TensorDataset(X_train_t, y_train_t)
+        test_ds = TensorDataset(X_test_t, y_test_t)
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=shuffle_flag)
+        test_loader = DataLoader(test_ds, batch_size=batch_size)
     device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
     if verbose:
         print(f'Datasets: train={len(train_ds)}, test={len(test_ds)}, batch_size={batch_size}')
@@ -197,21 +368,39 @@ def main():
 
 
     # Build model
-    input_dim = X_train.shape[1]
+    if model_type == "cnn1d":
+        input_dim = X_train.shape[2]      # CNN: (N, 1, L) -> L
+    elif model_type == "mlp":
+        input_dim = X_train.shape[1]      # MLP: (N, F) -> F
+
     n_targets = y_train_arr.shape[1]
     # Parse hidden dims string
     try:
         hidden_dims = [int(x) for x in hidden_dims.split(',') if x.strip()]
     except Exception:
         hidden_dims = [128, 64] # default if parsing fails
-    model = MLP(input_dim, hidden_dims=hidden_dims, output_dim=n_targets, dropout=dropout, use_batchnorm=use_batchnorm).to(device)
+
+    model_cfg = cfg["model"]
+    model_type = model_cfg["type"]
+    # print("num_channels =", num_channels)
+    # print("input_length =", input_dim)
+    # print("kernel_size =", kernel_size)
+    # print("pool_kernel =", pool_kernel)
+    model = create_model(
+        model_type=model_type,
+        cfg=model_cfg,
+        input_length=input_dim,
+        output_dim =n_targets
+    ).to(device)
+
+    # model = MLP(input_dim, hidden_dims=hidden_dims, output_dim=n_targets, dropout=dropout, use_batchnorm=use_batchnorm).to(device)
     if verbose:
         print('-------------------Model architecture-------------------')
         print(model)
 
     # Training configuration
     epochs = epochs
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr,weight_decay=1e-4)
     # Use Mean Squared Error for regression-style training
     loss_fn = nn.MSELoss()
 
@@ -233,7 +422,12 @@ def main():
     now = datetime.datetime.now().strftime('%m%d-%H%M%S')
 
     # 1. Create non-shuffled loader for plotting
-    plot_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=False)
+    plot_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=train_loader.collate_fn
+    )
 
     # 2. Get correctly ordered true/pred
     train_loss, y_true_train, y_pred_train = evaluate(model, device, plot_loader, loss_fn)
@@ -260,7 +454,7 @@ def main():
     for t in range(y_pred_denorm_train.shape[1]):
         # print(f'Plotting Target {t} vs predicted values (denormalized) on training set')
         save_p = os.path.join(save_dir, '2. train_pred_true_graph')
-        save_p = os.path.join(save_p, f'Training_target_{t}_scatter_{now}.png') if save_dir else None
+        save_p = os.path.join(save_p, f'{model_type}_Training_target_{t}_scatter_{now}.png') if save_dir else None
         plot_results(y_true_denorm_train[:, t], y_pred_denorm_train[:, t], save_path=save_p)
     
     # Load best model state for final evaluation if available
@@ -270,7 +464,7 @@ def main():
 
     # Save loss curve to file
     loss_plot_path = os.path.join(save_dir, '1. loss_graph')
-    loss_plot_path = os.path.join(loss_plot_path, f'losses_{now}.png') if save_dir else None
+    loss_plot_path = os.path.join(loss_plot_path, f'{model_type}_losses_{now}.png') if save_dir else None
     try:
         plot_losses(train_losses, val_losses, save_path=loss_plot_path)
     except Exception as e:
@@ -279,7 +473,7 @@ def main():
     try:
         if save_dir:
             loss_csv_path = os.path.join(save_dir, '5. loss_csv')
-            loss_csv_path = os.path.join(loss_csv_path, f'losses_{now}.csv')
+            loss_csv_path = os.path.join(loss_csv_path, f'{model_type}_losses_{now}.csv')
             df_losses = pd.DataFrame({'epoch': list(range(1, len(train_losses) + 1)), 'train_loss': train_losses, 'val_loss': val_losses})
             df_losses.to_csv(loss_csv_path, index=False)
             print(f'------->Saved losses CSV to {loss_csv_path}')
@@ -292,11 +486,13 @@ def main():
     y_preds = []
     model.eval()
     with torch.no_grad():
-        for data, _ in test_loader:
-            pred = model(data.to(device)).cpu().numpy()
-            if pred.ndim == 1:
+        for batch in test_loader:
+            data, lengths, _ = _unpack_batch(batch)
+            preds_batch = model(data.to(device), lengths) if lengths is not None else model(data.to(device))
+            preds_np = preds_batch.cpu().numpy()
+            if preds_np.ndim == 1:
                 print('---------------------------- pred is 1D ----------------------------')
-            y_preds.extend(pred.tolist())
+            y_preds.extend(preds_np.tolist())
     # Convert to original label scale if label_scaler is provided; y_true and model preds are in that same space
     # y_true and y_pred are in the scaled training space (if label_scaler was used during preprocessing).
     y_true_scaled = y_true.copy()
@@ -336,7 +532,7 @@ def main():
         for t in range(y_pred_denorm.shape[1]):
             # print(f'Plotting Target {t} vs predicted values (denormalized)')
             save_p = os.path.join(save_dir, '3. test_pred_true_graph')
-            save_p = os.path.join(save_p, f'Test_target_{t}_scatter_{now}.png') if save_dir else None
+            save_p = os.path.join(save_p, f'{model_type}_Test_target_{t}_scatter_{now}.png') if save_dir else None
             plot_results(y_true_denorm[:, t], y_pred_denorm[:, t], save_path=save_p)
 
     # # Show a few sample predictions per sample and per target
@@ -371,13 +567,13 @@ def main():
     # Save final model state
     if save_dir:
         final_model_path = os.path.join(save_dir, '6. weights')
-        final_model_path = os.path.join(final_model_path, f'model_final_{now}.pth')
+        final_model_path = os.path.join(final_model_path, f'{model_type}_model_final_{now}.pth')
         torch.save(model.state_dict(), final_model_path)
         print(f'------->Saved final model state to {final_model_path}')
 
     if save_dir:
         config_save_path = os.path.join(save_dir, '4. config')
-        config_save_path = os.path.join(config_save_path, f'config_used_{now}.yaml')
+        config_save_path = os.path.join(config_save_path, f'{model_type}_config_used_{now}.yaml')
         with open(config_save_path, 'w') as f:
             yaml.dump(cfg, f)
         print(f'------->Saved config file to {config_save_path}')

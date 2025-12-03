@@ -1,0 +1,26 @@
+data:
+  examples: "valid_examples_listseq.csv"
+  labels: "valid_labels_listseq.csv"
+  window_size: 16
+  step_size: 4
+  scale_labels: false
+
+training:
+  epochs: 50
+  batch_size: 8
+  lr: 0.0003
+  seed: 42
+  val_split: 0.2
+  shuffle: true
+
+model:
+  type: "lstm"
+  hidden_size: 128
+  num_layers: 2
+  dropout: 0.2
+
+paths:
+  save_dir: "outputs"
+
+print:
+  verbose: true
