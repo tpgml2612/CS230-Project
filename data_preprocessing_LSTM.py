@@ -1,17 +1,17 @@
-"""Utilities for preparing variable-length two-channel sequences for LSTM training."""
+"""Preprocessing utilities for standard many-to-one LSTM training."""
 import ast
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 
 def _parse_list(value: Sequence) -> List[float]:
-    """Safely parse a stringified Python list into a list of floats."""
     if isinstance(value, str):
         value = value.strip()
         if not value:
@@ -28,33 +28,12 @@ def _parse_list(value: Sequence) -> List[float]:
     return [float(x) for x in parsed]
 
 
-def create_sliding_windows(sequence: torch.Tensor, window_size: int, step_size: int) -> List[torch.Tensor]:
-    """Generate 1D sliding windows for a single channel sequence."""
-    if sequence.numel() == 0:
-        return []
-    if sequence.numel() < window_size:
-        padded = torch.zeros(window_size, dtype=sequence.dtype)
-        padded[: sequence.numel()] = sequence
-        return [padded]
-
-    windows = []
-    for start in range(0, sequence.numel() - window_size + 1, step_size):
-        windows.append(sequence[start : start + window_size])
-
-    if not windows:
-        windows.append(sequence[-window_size:])
-    return windows
-
-
-class SequenceWindowDataset(Dataset):
-    """Dataset that stores per-example window tensors and labels."""
-
+class SequenceDataset(Dataset):
     def __init__(self, sequences: List[torch.Tensor], labels: torch.Tensor):
         if len(sequences) != labels.shape[0]:
             raise ValueError("Number of sequences and labels must match")
         self.sequences = sequences
         self.labels = labels.float()
-        self.label_dim = self.labels.shape[1] if self.labels.ndim > 1 else 1
 
     def __len__(self) -> int:
         return len(self.sequences)
@@ -64,31 +43,29 @@ class SequenceWindowDataset(Dataset):
 
 
 def lstm_collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor]]):
-    """Pad variable-length sequences for LSTM consumption and sort by descending length."""
     sequences, labels = zip(*batch)
     lengths = torch.tensor([seq.size(0) for seq in sequences], dtype=torch.long)
     sorted_indices = torch.argsort(lengths, descending=True)
+    sequences_sorted = [sequences[i] for i in sorted_indices]
+    labels_sorted = torch.stack([labels[i] for i in sorted_indices]).float()
+    lengths_sorted = lengths[sorted_indices]
 
-    sorted_sequences = [sequences[i] for i in sorted_indices]
-    sorted_labels = torch.stack([labels[i] for i in sorted_indices]).float()
-    sorted_lengths = lengths[sorted_indices]
-
-    padded_sequences = pad_sequence(sorted_sequences, batch_first=True)
-    return padded_sequences, sorted_lengths, sorted_labels
+    padded_sequences = pad_sequence(sequences_sorted, batch_first=True)
+    return padded_sequences, lengths_sorted, labels_sorted
 
 
 def preprocess_data_LSTM(
     examples_path: str,
     labels_path: str,
-    window_size: int,
-    step_size: int,
     batch_size: int,
     val_split: float = 0.2,
     seed: int = 42,
     shuffle: bool = True,
     num_workers: int = 0,
-) -> Tuple[DataLoader, DataLoader, int]:
-    """Prepare DataLoaders for LSTM training with sliding-window sequences."""
+    scale_labels: bool = False,
+    scale_inputs: bool = True,
+    downsample_factor: int = 1,
+) -> Tuple[DataLoader, DataLoader, int, Optional[StandardScaler]]:
     examples_df = pd.read_csv(examples_path)
     labels_df = pd.read_csv(labels_path)
     if len(examples_df) != len(labels_df):
@@ -96,21 +73,21 @@ def preprocess_data_LSTM(
 
     sequences: List[torch.Tensor] = []
     label_tensors: List[torch.Tensor] = []
-    skipped = 0
     for idx in range(len(examples_df)):
         seq_a = torch.tensor(_parse_list(examples_df.iloc[idx, 0]), dtype=torch.float)
         seq_b = torch.tensor(_parse_list(examples_df.iloc[idx, 1]), dtype=torch.float)
-
-        windows_a = create_sliding_windows(seq_a, window_size, step_size)
-        windows_b = create_sliding_windows(seq_b, window_size, step_size)
-        num_windows = min(len(windows_a), len(windows_b))
-        if num_windows == 0:
-            skipped += 1
+        seq_len = min(seq_a.numel(), seq_b.numel())
+        if seq_len == 0:
             continue
-
-        stacked = torch.stack(
-            [torch.stack((windows_a[w], windows_b[w]), dim=-1) for w in range(num_windows)], dim=0
-        )
+        seq_a = seq_a[:seq_len]
+        seq_b = seq_b[:seq_len]
+        if downsample_factor > 1:
+            seq_a = seq_a[::downsample_factor]
+            seq_b = seq_b[::downsample_factor]
+            seq_len = min(seq_a.numel(), seq_b.numel())
+            if seq_len == 0:
+                continue
+        stacked = torch.stack((seq_a[:seq_len], seq_b[:seq_len]), dim=-1)
         sequences.append(stacked)
         label_values = torch.tensor(labels_df.iloc[idx].values, dtype=torch.float)
         if label_values.ndim == 0:
@@ -118,7 +95,7 @@ def preprocess_data_LSTM(
         label_tensors.append(label_values)
 
     if not sequences:
-        raise ValueError("No valid sequences produced. Check window/step sizes.")
+        raise ValueError("No valid sequences found after parsing CSV files.")
 
     labels_tensor = torch.stack(label_tensors, dim=0)
     indices = np.arange(len(sequences))
@@ -126,13 +103,44 @@ def preprocess_data_LSTM(
         indices, test_size=val_split, random_state=seed, shuffle=True
     )
 
+    def _channel_stats(index_list: np.ndarray, channel: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        values = [
+            sequences[i][:, channel]
+            for i in index_list
+            if sequences[i].size(0) > 0
+        ]
+        if not values:
+            return torch.tensor(0.0), torch.tensor(1.0)
+        concat = torch.cat(values)
+        mean = concat.mean()
+        std = concat.std(unbiased=False).clamp_min(1e-6)
+        return mean, std
+
+    if scale_inputs:
+        mean_a, std_a = _channel_stats(train_idx, 0)
+        mean_b, std_b = _channel_stats(train_idx, 1)
+        for i in range(len(sequences)):
+            seq = sequences[i]
+            norm_a = (seq[:, 0] - mean_a) / std_a
+            norm_b = (seq[:, 1] - mean_b) / std_b
+            sequences[i] = torch.stack((norm_a, norm_b), dim=-1)
+
+    if scale_labels:
+        scaler = StandardScaler()
+        labels_np = labels_tensor.numpy()
+        scaler.fit(labels_np[train_idx])
+        labels_scaled = torch.from_numpy(scaler.transform(labels_np)).float()
+    else:
+        scaler = None
+        labels_scaled = labels_tensor.float()
+
     train_sequences = [sequences[i] for i in train_idx]
     val_sequences = [sequences[i] for i in val_idx]
-    train_labels = labels_tensor[train_idx]
-    val_labels = labels_tensor[val_idx]
+    train_labels = labels_scaled[train_idx]
+    val_labels = labels_scaled[val_idx]
 
-    train_dataset = SequenceWindowDataset(train_sequences, train_labels)
-    val_dataset = SequenceWindowDataset(val_sequences, val_labels)
+    train_dataset = SequenceDataset(train_sequences, train_labels)
+    val_dataset = SequenceDataset(val_sequences, val_labels)
 
     train_loader = DataLoader(
         train_dataset,
@@ -149,7 +157,4 @@ def preprocess_data_LSTM(
         num_workers=num_workers,
     )
 
-    if skipped:
-        print(f"Skipped {skipped} examples that could not form at least one window pair.")
-
-    return train_loader, val_loader, 2
+    return train_loader, val_loader, 2, scaler

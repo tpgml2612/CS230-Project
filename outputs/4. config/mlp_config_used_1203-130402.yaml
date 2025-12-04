@@ -1,0 +1,26 @@
+data:
+  examples: X_examples.csv
+  labels: Y_labels.csv
+  scale_labels: true
+model:
+  dropout: 0.0
+  hidden_dims:
+  - 128
+  - 64
+  - 32
+  - 64
+  - 128
+  - 64
+  - 32
+  - 16
+  type: mlp
+  use_batchnorm: true
+paths:
+  save_dir: outputs
+print:
+  verbose: true
+training:
+  batch_size: 16
+  epochs: 100
+  lr: 0.001
+  seed: 42

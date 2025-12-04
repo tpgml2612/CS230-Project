@@ -1,4 +1,4 @@
-"""Many-to-one LSTM that ingests batches of sliding-window sequences."""
+"""Many-to-one LSTM that ingests variable-length two-channel sequences."""
 from typing import Optional
 
 import torch
@@ -24,16 +24,19 @@ class LSTM(nn.Module):
             dropout=lstm_dropout,
             batch_first=True,
         )
-        self.head = nn.Linear(hidden_size, output_size)
+        head_layers = [
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, output_size)
+        ]
+        self.head = nn.Sequential(*head_layers)
 
-    def forward(self, windows: torch.Tensor, lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, sequences: torch.Tensor, lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
         if lengths is None:
             raise ValueError("LSTM.forward requires sequence lengths when using packed sequences")
-        batch_size, max_windows, window_size, channels = windows.shape
-        flattened = windows.view(batch_size, max_windows * window_size, channels)
-        expanded_lengths = lengths * window_size
         packed = pack_padded_sequence(
-            flattened, expanded_lengths.cpu(), batch_first=True, enforce_sorted=True
+            sequences, lengths.cpu(), batch_first=True, enforce_sorted=True
         )
         _, (hidden, _) = self.lstm(packed)
         final_hidden = hidden[-1]

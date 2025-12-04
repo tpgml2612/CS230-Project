@@ -1,0 +1,22 @@
+data:
+  downsample_factor: 4
+  examples: valid_examples_listseq.csv
+  labels: valid_labels_listseq.csv
+  scale_inputs: true
+  scale_labels: true
+model:
+  dropout: 0.3
+  hidden_size: 64
+  num_layers: 1
+  type: lstm
+paths:
+  save_dir: outputs
+print:
+  verbose: true
+training:
+  batch_size: 12
+  epochs: 100
+  lr: 0.0005
+  seed: 42
+  shuffle: true
+  val_split: 0.2

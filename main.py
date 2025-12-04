@@ -13,6 +13,8 @@ from data_preprocessing_LSTM import preprocess_data_LSTM
 from models.lstm_model import LSTM
 import yaml
 
+
+
 class MLP(nn.Module):
     def __init__(self, input_dim, hidden_dims=[128, 64], output_dim=1, dropout=0.2, use_batchnorm=True):
         super(MLP, self).__init__()
@@ -26,13 +28,54 @@ class MLP(nn.Module):
             if dropout and dropout > 0:
                 layers.append(nn.Dropout(p=dropout))
             last_dim = h
-        # Final output: output_dim for multi-target regression
         layers.append(nn.Linear(last_dim, output_dim))
         self.net = nn.Sequential(*layers)
 
     def forward(self, x):
         out = self.net(x)
         return out
+class ResnetMLP(nn.Module):
+    def __init__(self, input_dim, hidden_dims=[128,128,64,64], output_dim=1,
+                 dropout=0.2, use_batchnorm=True):
+        super().__init__()
+        layers = []
+        last_dim = input_dim
+
+        for h in hidden_dims:
+
+            if h != last_dim:
+                block = [nn.Linear(last_dim, h)]
+                if use_batchnorm:
+                    block.append(nn.BatchNorm1d(h))
+                block.append(nn.ReLU())
+                if dropout > 0:
+                    block.append(nn.Dropout(dropout))
+                layers.append(nn.Sequential(*block))
+            else:
+                layers.append(ResidualBlock(h, dropout, use_batchnorm))
+
+            last_dim = h
+
+        layers.append(nn.Linear(last_dim, output_dim))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(x)
+
+class ResidualBlock(nn.Module):
+    def __init__(self, dim, dropout=0.2, use_batchnorm=True):
+        super().__init__()
+        layers = [nn.Linear(dim, dim)]
+        if use_batchnorm:
+            layers.append(nn.BatchNorm1d(dim))
+        layers.append(nn.ReLU())
+        if dropout > 0:
+            layers.append(nn.Dropout(dropout))
+        self.block = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return x + self.block(x)
+
 
 class CNN1D(nn.Module):
     def __init__(
@@ -110,8 +153,6 @@ class CNN1D(nn.Module):
         x = self.classifier(x)
         return x
 
-
-
 def _unpack_batch(batch):
     if len(batch) == 3:
         data, lengths, target = batch
@@ -119,7 +160,6 @@ def _unpack_batch(batch):
         data, target = batch
         lengths = None
     return data, lengths, target
-
 
 def train(model, device, dataloader, optimizer, loss_fn, epoch):
     model.train()
@@ -142,7 +182,6 @@ def train(model, device, dataloader, optimizer, loss_fn, epoch):
 
     avg_loss = running_loss / total if total > 0 else 0.0
     return avg_loss
-
 
 def evaluate(model, device, dataloader, loss_fn=None):
     model.eval()
@@ -167,16 +206,13 @@ def evaluate(model, device, dataloader, loss_fn=None):
     avg_loss = running_loss / total if total > 0 else None
     return avg_loss, np.array(trues), np.array(preds)
 
-
-# EarlyStopping removed for simplified pipeline per user request
-
-
-def plot_results(y_test, y_pred, save_path=None, title='True Values vs Predicted Values'):
+def plot_results(y_test, y_pred, save_path=None, title='Prediction vs Actual'):
     plt.figure(figsize=(10, 5))
     plt.scatter(y_test, y_pred, alpha=0.5)
-    plt.xlabel('True Values')
-    plt.ylabel('Predictions')
+    plt.xlabel('Actual Values (True Values)')
+    plt.ylabel('Predicted Values (Predictions)')
     plt.title(title)
+    plt.grid()
     # Use diagonal (y=x) based on the actual min/max of the combined values
     combined_min = min(np.min(y_test), np.min(y_pred))
     combined_max = max(np.max(y_test), np.max(y_pred))
@@ -188,6 +224,15 @@ def plot_results(y_test, y_pred, save_path=None, title='True Values vs Predicted
     else:
         plt.show()
 
+def save_csv(y_test, y_pred, save_path=None):
+    # Save CSV
+    if save_path:
+        df = pd.DataFrame({
+            'y_test': np.array(y_test).flatten(),
+            'y_pred': np.array(y_pred).flatten(),
+        })
+        df.to_csv(save_path, index=False)
+        print(f'-------> Saved CSV to {save_path}')
 
 def plot_losses(train_losses, val_losses, save_path=None):
     plt.figure(figsize=(8, 5))
@@ -197,7 +242,7 @@ def plot_losses(train_losses, val_losses, save_path=None):
     plt.xlabel('Epoch')
     plt.ylabel('Loss (MSE)')
     plt.title('Training and Validation Losses')
-    plt.ylim(bottom=0, top=2)
+    plt.ylim(bottom=0, top=1.1)
     plt.legend()
     if save_path:
         plt.savefig(save_path, bbox_inches='tight')
@@ -207,12 +252,6 @@ def plot_losses(train_losses, val_losses, save_path=None):
         plt.show()
 
 def create_model(model_type, cfg, input_length, output_dim):
-    """
-    model_type : string ("mlp", "cnn1d", ...)
-    cfg        : cfg["model"] dictionary from YAML
-    input_length : computed input dim (usually X_train.shape[1] or shape[2])
-    """
-
     if model_type == "mlp":
         return MLP(
             input_dim=input_length,
@@ -241,11 +280,17 @@ def create_model(model_type, cfg, input_length, output_dim):
             dropout=cfg.get("dropout", 0.2),
             output_size=output_dim
         )
-
+    elif model_type == "resnet_mlp":
+        return ResnetMLP(
+            input_dim=input_length,
+            hidden_dims=cfg.get("hidden_dims"),
+            output_dim=output_dim,
+            dropout=cfg.get("dropout"),
+            use_batchnorm=cfg.get("use_batchnorm", False)
+        )
 
     else:
         raise ValueError(f"Unknown model type: {model_type}")
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -297,24 +342,24 @@ def main():
 
     ###############################
 
-    preprocessing_cfg = cfg.get('preprocessing', {})
-    window_size = data_cfg.get('window_size', preprocessing_cfg.get('window_size', 32))
-    step_size = data_cfg.get('step_size', preprocessing_cfg.get('step_size', 1))
+    scale_inputs = data_cfg.get('scale_inputs', True)
+    downsample_factor = data_cfg.get('downsample_factor', 1)
     val_split = train_cfg.get('val_split', 0.2)
     shuffle_flag = train_cfg.get('shuffle', True)
     num_workers = train_cfg.get('num_workers', 0)
 
     if model_type == "lstm":
-        train_loader, test_loader, input_dim = preprocess_data_LSTM(
+        train_loader, test_loader, input_dim, label_scaler = preprocess_data_LSTM(
             examples_path=examples_path,
             labels_path=labels_path,
-            window_size=window_size,
-            step_size=step_size,
             batch_size=batch_size,
             val_split=val_split,
             seed=seed,
             shuffle=shuffle_flag,
             num_workers=num_workers,
+            scale_labels=scale_labels,
+            scale_inputs=scale_inputs,
+            downsample_factor=downsample_factor,
         )
         train_ds = train_loader.dataset
         test_ds = test_loader.dataset
@@ -324,11 +369,10 @@ def main():
         y_test_raw = y_test_arr.copy()
         label_encoder = None
         scaler = None
-        label_scaler = None
     else:
         print(f'Loading data: examples={examples_path}, labels={labels_path}')
         examples, labels = load_data(examples_path, labels_path)
-        if model_type == "mlp":
+        if model_type == "mlp" or model_type == "resnet_mlp":
             X_train, X_test, y_train, y_test, y_train_raw, y_test_raw, label_encoder, scaler, label_scaler = preprocess_data_MLP(examples, labels, scale_labels=scale_labels)
         elif model_type == "cnn1d":
             X_train, X_test, y_train, y_test, y_train_raw, y_test_raw, label_encoder, scaler, label_scaler = preprocess_data_1D_CNN(examples, labels, scale_labels=scale_labels)
@@ -361,6 +405,39 @@ def main():
         test_ds = TensorDataset(X_test_t, y_test_t)
         train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=shuffle_flag)
         test_loader = DataLoader(test_ds, batch_size=batch_size)
+
+    def _preview_dataset():
+        print(f"Train dataset size: {len(train_ds)}, Val dataset size: {len(test_ds)}")
+        sample_data, sample_label = train_ds[0]
+        if model_type == "lstm":
+            print(
+                "Sample sequence shape:",
+                sample_data.shape,
+                "| length=",
+                sample_data.size(0),
+                "| channels=",
+                sample_data.size(1),
+            )
+            print("Sample label:", sample_label.numpy())
+
+            batch = next(iter(train_loader))
+            batch_data, batch_lengths, batch_labels = batch
+            print(
+                "First batch padded shape:",
+                batch_data.shape,
+                "| lengths:",
+                batch_lengths.tolist(),
+            )
+            print("Batch labels shape:", batch_labels.shape)
+        else:
+            print("Sample feature shape:", sample_data.shape)
+            print("Sample label:", sample_label.numpy())
+            batch = next(iter(train_loader))
+            data_batch, label_batch = batch
+            print("First batch tensor shape:", data_batch.shape)
+            print("Batch labels shape:", label_batch.shape)
+
+    _preview_dataset()
     device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
     if verbose:
         print(f'Datasets: train={len(train_ds)}, test={len(test_ds)}, batch_size={batch_size}')
@@ -368,9 +445,11 @@ def main():
 
 
     # Build model
-    if model_type == "cnn1d":
+    if model_type == "lstm":
+        input_dim = 2
+    elif model_type == "cnn1d":
         input_dim = X_train.shape[2]      # CNN: (N, 1, L) -> L
-    elif model_type == "mlp":
+    elif model_type == "mlp" or model_type == "resnet_mlp":
         input_dim = X_train.shape[1]      # MLP: (N, F) -> F
 
     n_targets = y_train_arr.shape[1]
@@ -382,10 +461,6 @@ def main():
 
     model_cfg = cfg["model"]
     model_type = model_cfg["type"]
-    # print("num_channels =", num_channels)
-    # print("input_length =", input_dim)
-    # print("kernel_size =", kernel_size)
-    # print("pool_kernel =", pool_kernel)
     model = create_model(
         model_type=model_type,
         cfg=model_cfg,
@@ -414,7 +489,7 @@ def main():
         train_losses.append(train_loss)
         val_losses.append(val_loss if val_loss is not None else float('nan'))
         # Print only epoch and loss per user request
-        if epoch % 10 == 0:
+        if epoch % 1 == 0:
             print(f'Epoch {epoch}/{epochs} - Train Loss: {train_loss:.6f} - Val Loss: {val_loss:.6f}')
 
     print('-------------------Training finished — evaluating on training set-------------------')
@@ -456,7 +531,10 @@ def main():
         save_p = os.path.join(save_dir, '2. train_pred_true_graph')
         save_p = os.path.join(save_p, f'{model_type}_Training_target_{t}_scatter_{now}.png') if save_dir else None
         plot_results(y_true_denorm_train[:, t], y_pred_denorm_train[:, t], save_path=save_p)
-    
+
+        save_p = os.path.join(save_dir, '7. train_pred_true_csv')
+        save_p = os.path.join(save_p, f'{model_type}_Training_target_{t}_pred_true_{now}.csv') if save_dir else None
+        save_csv(y_true_denorm_train[:, t], y_pred_denorm_train[:, t], save_path=save_p)
     # Load best model state for final evaluation if available
     # if best_model_state is not None:
     #     model.load_state_dict(best_model_state)
@@ -508,23 +586,6 @@ def main():
         print('------->No label_scaler provided or scaling disabled; using raw test labels as original scale')
         y_true_denorm = y_test_raw
         y_pred_denorm = y_pred_scaled
-
-        # If no scaler used, `y_test_raw` contains original units; ensure it's 2D
-    # Print a few sample comparisons between scaled and denormalized values for verification
-    # if args.print:
-    #     print('Sample verification: scaled -> denormalized (first 5 entries)')
-    # for i in range(min(5, len(y_true_scaled))):
-    #     if y_true_scaled.ndim == 1:
-    #         print(f'  Sample {i}: scaled_true={y_true_scaled[i]:.6f}, scaled_pred={y_pred_scaled[i]:.6f} -> denorm_true={y_true_denorm[i]:.6f}, denorm_pred={y_pred_denorm[i]:.6f}')
-    #     else:
-    #         scaled_true_str = ', '.join(f'{v:.6f}' for v in y_true_scaled[i])
-    #         scaled_pred_str = ', '.join(f'{v:.6f}' for v in y_pred_scaled[i])
-    #         denorm_true_str = ', '.join(f'{v:.6f}' for v in y_true_denorm[i])
-    #         denorm_pred_str = ', '.join(f'{v:.6f}' for v in y_pred_denorm[i])
-    #         print(f'  Sample {i}: scaled_true=[{scaled_true_str}], scaled_pred=[{scaled_pred_str}] -> denorm_true=[{denorm_true_str}], denorm_pred=[{denorm_pred_str}]')
-    # If multiple targets, create separate plots for each target using denormalized values and save them
-    
-    
     
     if y_pred_denorm.ndim == 1 or y_pred_denorm.shape[1] == 1:
         print('---------------------------- Single target detected for plotting ----------------------------')
@@ -535,18 +596,10 @@ def main():
             save_p = os.path.join(save_p, f'{model_type}_Test_target_{t}_scatter_{now}.png') if save_dir else None
             plot_results(y_true_denorm[:, t], y_pred_denorm[:, t], save_path=save_p)
 
-    # # Show a few sample predictions per sample and per target
-    # print('Example predictions (first 10 samples):')
-    # for i in range(min(10, len(y_true_denorm))):
-    #     if y_true_denorm.ndim == 1:
-    #         true_str = f'{y_true_denorm[i]:.4f}'
-    #         pred_str = f'{y_pred_denorm[i]:.4f}'
-    #     else:
-    #         true_str = ', '.join(f'{v:.4f}' for v in y_true_denorm[i])
-    #         pred_str = ', '.join(f'{v:.4f}' for v in y_pred_denorm[i])
-    #     print(f'    Sample {i}: true=[{true_str}], pred=[{pred_str}]')
+            save_p = os.path.join(save_dir, '8. test_pred_true_csv')
+            save_p = os.path.join(save_p, f'{model_type}_Test_target_{t}_pred_true_{now}.csv') if save_dir else None
+            save_csv(y_true_denorm[:, t], y_pred_denorm[:, t], save_path=save_p)
 
-    # Compute per-target MSE in scaled space
     per_target_mse = []
     per_target_abs_denorm = []
     if y_true_denorm.ndim == 1 or (y_true_denorm.ndim == 2 and y_true_denorm.shape[1] == 1):
@@ -562,8 +615,6 @@ def main():
     print(f'3. Final test MSE per target (scaled): {per_target_mse}')
     print(f'4. Final test MAE per target (denormalized): {per_target_abs_denorm}')
 
-    
-    # print(f'3. Final test MSE (scaled, mean across targets): {final_test_mse_scaled:.6f}')
     # Save final model state
     if save_dir:
         final_model_path = os.path.join(save_dir, '6. weights')
