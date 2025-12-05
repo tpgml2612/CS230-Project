@@ -19,10 +19,13 @@ venv/
 *.txt
 
 # 5. 예외 규칙 (results 폴더는 추적)
-!outputs/1. loss_graph/*.png
-!outputs/2. train_pred_true_graph/**/*.png
-!outputs/3. test_pred_true_graph/**/*.png
-!outputs/4. config/**/*.yaml
-!outputs/6. weights/**/*.pth
-!outputs/5. loss_csv/*.csv
-
+# !outputs/1. loss_graph/*.png
+# !outputs/2. train_pred_true_graph/**/*.png
+# !outputs/3. test_pred_true_graph/**/*.png
+# !outputs/4. config/**/*.yaml
+# !outputs/6. weights/**/*.pth
+# !outputs/5. loss_csv/*.csv
+!outputs/9. important figures/*.csv
+!outputs/9. important figures/*.png
+!outputs/9. important figures/*.pth
+!outputs/9. important figures/*.yaml
