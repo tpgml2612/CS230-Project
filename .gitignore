@@ -31,3 +31,5 @@ venv/
 !outputs/9. important figures/*.yaml*.pt
 *.pth
 weights/
+*.pth
+weights/
