@@ -28,4 +28,6 @@ venv/
 !outputs/9. important figures/*.csv
 !outputs/9. important figures/*.png
 !outputs/9. important figures/*.pth
-!outputs/9. important figures/*.yaml
+!outputs/9. important figures/*.yaml*.pt
+*.pth
+weights/
