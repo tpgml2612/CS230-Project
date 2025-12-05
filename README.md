@@ -109,6 +109,4 @@ This project explores:
 - Explore transformers or hybrid CNN-RNN approaches  
 - Build real-time grasp-pressure adaptation for teleoperation  
 
----
 
-## 📦 Repository Structure
