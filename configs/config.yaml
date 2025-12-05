@@ -7,17 +7,18 @@ data:
 
 training:
   epochs: 100
-  batch_size: 12
+  batch_size: 8
   lr: 0.0005
   seed: 42
   val_split: 0.2
   shuffle: true
+  grad_clip: 1.0
 
 model:
   type: "lstm"
-  hidden_size: 64
-  num_layers: 1
-  dropout: 0.3
+  hidden_size: 512
+  num_layers: 3
+  dropout: 0.2
 
 paths:
   save_dir: "outputs"

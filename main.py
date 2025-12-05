@@ -10,7 +10,7 @@ import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 from data_preprocessing import load_data, preprocess_data_MLP, preprocess_data_1D_CNN
 from data_preprocessing_LSTM import preprocess_data_LSTM
-from models.lstm_model import LSTM
+from models.lstm_model import LSTM, GRU
 import yaml
 
 
@@ -161,7 +161,7 @@ def _unpack_batch(batch):
         lengths = None
     return data, lengths, target
 
-def train(model, device, dataloader, optimizer, loss_fn, epoch):
+def train(model, device, dataloader, optimizer, loss_fn, epoch, grad_clip=None):
     model.train()
     running_loss = 0.0
     total = 0
@@ -175,6 +175,8 @@ def train(model, device, dataloader, optimizer, loss_fn, epoch):
             outputs = model(data)
         loss = loss_fn(outputs, target)
         loss.backward()
+        if grad_clip is not None and grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
 
         running_loss += loss.item() * data.size(0)
@@ -280,6 +282,15 @@ def create_model(model_type, cfg, input_length, output_dim):
             dropout=cfg.get("dropout", 0.2),
             output_size=output_dim
         )
+    elif model_type == "gru":
+        hidden_size = cfg.get("hidden_size", cfg.get("hidden_dim", 128))
+        return GRU(
+            input_size=input_length,
+            hidden_size=hidden_size,
+            num_layers=cfg.get("num_layers", 2),
+            dropout=cfg.get("dropout", 0.2),
+            output_size=output_dim
+        )
     elif model_type == "resnet_mlp":
         return ResnetMLP(
             input_dim=input_length,
@@ -347,8 +358,9 @@ def main():
     val_split = train_cfg.get('val_split', 0.2)
     shuffle_flag = train_cfg.get('shuffle', True)
     num_workers = train_cfg.get('num_workers', 0)
+    grad_clip = train_cfg.get('grad_clip', 0.0)
 
-    if model_type == "lstm":
+    if model_type == "lstm" or model_type == "gru":
         train_loader, test_loader, input_dim, label_scaler = preprocess_data_LSTM(
             examples_path=examples_path,
             labels_path=labels_path,
@@ -356,7 +368,7 @@ def main():
             val_split=val_split,
             seed=seed,
             shuffle=shuffle_flag,
-            num_workers=num_workers,
+            # num_workers=num_workers,
             scale_labels=scale_labels,
             scale_inputs=scale_inputs,
             downsample_factor=downsample_factor,
@@ -409,7 +421,7 @@ def main():
     def _preview_dataset():
         print(f"Train dataset size: {len(train_ds)}, Val dataset size: {len(test_ds)}")
         sample_data, sample_label = train_ds[0]
-        if model_type == "lstm":
+        if model_type == "lstm" or model_type == "gru":
             print(
                 "Sample sequence shape:",
                 sample_data.shape,
@@ -445,7 +457,7 @@ def main():
 
 
     # Build model
-    if model_type == "lstm":
+    if model_type == "lstm" or model_type == "gru":
         input_dim = 2
     elif model_type == "cnn1d":
         input_dim = X_train.shape[2]      # CNN: (N, 1, L) -> L
@@ -484,7 +496,7 @@ def main():
     val_losses = []
     os.makedirs(save_dir, exist_ok=True)
     for epoch in range(1, epochs + 1):
-        train_loss = train(model, device, train_loader, optimizer, loss_fn, epoch)
+        train_loss = train(model, device, train_loader, optimizer, loss_fn, epoch, grad_clip=grad_clip)
         val_loss, _, _ = evaluate(model, device, test_loader, loss_fn)
         train_losses.append(train_loss)
         val_losses.append(val_loss if val_loss is not None else float('nan'))

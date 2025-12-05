@@ -25,4 +25,4 @@ venv/
 !outputs/4. config/**/*.yaml
 !outputs/6. weights/**/*.pth
 !outputs/5. loss_csv/*.csv
-outputs/*.pthoutputs/
+

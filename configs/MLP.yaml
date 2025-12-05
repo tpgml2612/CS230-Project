@@ -5,7 +5,7 @@ data:
 
 
 training:
-  epochs: 1000
+  epochs: 10000
   batch_size: 16
   lr: 0.001
   seed: 42
@@ -13,7 +13,7 @@ training:
 
 model:
   type: "resnet_mlp"
-  hidden_dims: [8192, 4096,2048, 1024,512, 256, 64, 16]
+  hidden_dims: [256, 64, 16]
   dropout: 0.3
   use_batchnorm: true
 

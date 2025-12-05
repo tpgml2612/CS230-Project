@@ -4,7 +4,7 @@ data:
   scale_labels: true
 
 preprocessing:
-  window_size: 10
+  window_size: 20
   step_size: 10
   use_scalar: true
 
@@ -13,14 +13,11 @@ training:
   batch_size: 8
   lr: 0.0003
   seed: 42
-  shuffle: true
 
 model:
-  type: "lstm"
-  hidden_dim: 32
-  num_layers: 1
-  dropout: 0.3
-  bidirectional: false
+  type: "window_lstm"
+  hidden_dim: 64
+  dropout: 0.0
 
 paths:
   save_dir: "outputs"

@@ -1,0 +1,21 @@
+data:
+  examples: valid_examples_listseq.csv
+  labels: valid_labels_listseq.csv
+  scale_labels: true
+model:
+  dropout: 0.3
+  hidden_dims:
+  - 256
+  - 64
+  - 16
+  type: resnet_mlp
+  use_batchnorm: true
+paths:
+  save_dir: outputs
+print:
+  verbose: true
+training:
+  batch_size: 16
+  epochs: 10000
+  lr: 0.001
+  seed: 42
