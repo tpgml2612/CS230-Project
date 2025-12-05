@@ -110,3 +110,7 @@ This project explores:
 - Build real-time grasp-pressure adaptation for teleoperation  
 
 
+---
+
+## Acknowledgment
+This README was edited with the assistance of ChatGPT for grammar and style.
