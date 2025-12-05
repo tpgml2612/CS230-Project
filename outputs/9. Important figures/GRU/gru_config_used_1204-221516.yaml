@@ -1,0 +1,23 @@
+data:
+  downsample_factor: 4
+  examples: valid_examples_listseq.csv
+  labels: valid_labels_listseq.csv
+  scale_inputs: true
+  scale_labels: true
+model:
+  dropout: 0.2
+  hidden_size: 512
+  num_layers: 3
+  type: gru
+paths:
+  save_dir: outputs
+print:
+  verbose: true
+training:
+  batch_size: 8
+  epochs: 50
+  grad_clip: 1.0
+  lr: 0.0005
+  seed: 42
+  shuffle: true
+  val_split: 0.2

@@ -6,7 +6,7 @@ data:
   downsample_factor: 4
 
 training:
-  epochs: 100
+  epochs: 50
   batch_size: 8
   lr: 0.0005
   seed: 42
@@ -15,7 +15,7 @@ training:
   grad_clip: 1.0
 
 model:
-  type: "lstm"
+  type: "gru"
   hidden_size: 512
   num_layers: 3
   dropout: 0.2
